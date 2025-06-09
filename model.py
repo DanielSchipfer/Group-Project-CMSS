@@ -5,38 +5,32 @@ from mesa.space import SingleGrid
 from mesa.datacollection import DataCollector
 import numpy as np
 class CountryAgent(Agent):
-    def __init__(self, model, pos, culture_vector):
+    def __init__(self, model, culture_vector, difference_threshhold):
         super().__init__(model)
-        self.pos = pos
         self.culture = culture_vector  # List of 6 Hofstede-style values ∈ [0,1]
+        self.difference_threshhold  = difference_threshhold
 
     def step(self):
         neighbors = self.model.grid.get_neighbors(self.pos, moore=True, include_center=False)
-        max_distance = math.sqrt((self.model.grid.width - 1) ** 2 + (self.model.grid.height - 1) ** 2)
+        max_distance = self.model.max_grid_diagonal
 
         for neighbor in neighbors:
             # Compute normalized Euclidean distance
             dx = self.pos[0] - neighbor.pos[0]
             dy = self.pos[1] - neighbor.pos[1]
             euclidean_distance = math.sqrt(dx**2 + dy**2)
-            distance_score = 1 - (euclidean_distance / max_distance)
+            distance_score_raw = 1 - (euclidean_distance / max_distance)
+            distance_score = max(distance_score_raw, self.model.min_connectivity) 
 
-            # Skip if distance filtering is active and this neighbor is too far
-            if self.model.use_distance and distance_score < self.model.min_distance_threshold:
-                continue
-
-            # Compute similarity (Axelrod-style): number of similar dimensions
+            # Compute similarity (Axelrod-style): number of similar dimensions 
             similarities = [
-                abs(self.culture[i] - neighbor.culture[i]) < 0.1  # consider similar if difference < 0.1
+                abs(self.culture[i] - neighbor.culture[i]) < self.difference_threshhold  
                 for i in range(len(self.culture))
             ]
             similarity_score = sum(similarities) / len(self.culture)
-
-            if similarity_score == 0:
-                continue  # No chance to interact
-
+            similarity_distance_score = (similarity_score + distance_score) / 2
             # Interaction chance proportional to similarity
-            if random.random() < similarity_score:
+            if random.random() < similarity_distance_score:
                 # Find differing features
                 differing_indices = [
                     i for i in range(len(self.culture))
@@ -49,28 +43,49 @@ class CountryAgent(Agent):
 
 
 class CulturalModel(Model):
-    def __init__(self, width=10, height=10, min_distance_threshold=0.2, use_distance=True, seed=None):
+    def __init__(self, width=10, height=10, min_connectivity=0.2, use_distance=True, difference_threshhold=0.1, seed=None):
         super().__init__(seed=seed)
+        
+        self.culture_dimension_stats = [
+                    {'name': 'PDI',  'mean': 59, 'std': 21.34, 'min': 11,  'max': 104},
+                    {'name': 'IND',  'mean': 46, 'std': 23.39, 'min': 12,  'max': 91},
+                    {'name': 'MAS',  'mean': 49, 'std': 19.96, 'min': 5,   'max': 110},
+                    {'name': 'UAI',  'mean': 67, 'std': 22.92, 'min': 8,   'max': 112},
+                    {'name': 'LTO',  'mean': 49, 'std': 22.57, 'min': 9,   'max': 100}
+                    ]
+        self.num_culture_dimensions = 5
 
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
 
         self.grid = SingleGrid(width, height, torus=False)
-        self.min_distance_threshold = min_distance_threshold
+        self.min_connectivity = min_connectivity
         self.use_distance = use_distance
-
+            
+        if self.grid.width > 1 or self.grid.height > 1:
+            self.max_grid_diagonal = math.sqrt((self.grid.width - 1)**2 + (self.grid.height - 1)**2)
+        else:
+            self.max_grid_diagonal = 0.0 
+            
         for x in range(width):
             for y in range(height):
                 # Remove any agent already at this position to avoid warnings (Mesa 3.0 safe)
                 for existing_agent in self.grid.get_cell_list_contents((x, y)):
                     existing_agent.remove()
 
-                # Create a new agent with a random 6-dim cultural vector
-                culture_vector = [random.uniform(0, 1) for _ in range(6)]
-                agent = CountryAgent(self, pos=(x, y), culture_vector=culture_vector)
-                self.grid.place_agent(agent, (x, y))
+                culture_vector = []
+                for i in range(self.num_culture_dimensions):
+                    stats = self.culture_dimension_stats[i]
+                    raw_value = np.random.normal(loc=stats['mean'], scale=stats['std'])
+                    denominator = stats['max'] - stats['min']
+                    normalized_value = (raw_value - stats['min']) / denominator
+                    clipped_value = np.clip(normalized_value, 0, 1)
+                    culture_vector.append(clipped_value)
                 
+                agent = CountryAgent(self, culture_vector=culture_vector, difference_threshhold=difference_threshhold)
+                self.grid.place_agent(agent, (x, y))
+          
         self.datacollector = DataCollector(
             model_reporters={"AverageCultureSimilarity": self.compute_average_similarity,
                             "UniqueProfiles": self.count_unique_profiles})
@@ -83,14 +98,8 @@ class CulturalModel(Model):
             profiles.add(rounded_profile)
         return len(profiles)
 
-       
-        
-
     def compute_average_similarity(self):
         agents = list(self.agents)
-        if len(agents) < 2:
-            return 1.0
-
         total_similarity = 0
         comparisons = 0
 
@@ -98,7 +107,8 @@ class CulturalModel(Model):
             for j in range(i + 1, len(agents)):
                 a = agents[i].culture
                 b = agents[j].culture
-                sim = sum(1 - abs(a[k] - b[k]) for k in range(6)) / 6
+                num_dimensions = len(a)
+                sim = sum(1 - abs(a[k] - b[k]) for k in range(num_dimensions)) / num_dimensions
                 total_similarity += sim
                 comparisons += 1
 
@@ -106,4 +116,4 @@ class CulturalModel(Model):
 
     def step(self):
         self.datacollector.collect(self)
-        self.agents.shuffle_do("step")  # Mesa 3.0: activates all agents randomly each step
+        self.agents.shuffle_do("step") 
