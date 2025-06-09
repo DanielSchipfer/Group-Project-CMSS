@@ -1,99 +1,109 @@
-import mesa
-import numpy as np
 import random
-
-def calculate_similarity(value1, value2):
-    """Calculate similarity between two Hofstede cultural scores.
-    Use inverse of absolute distance normalized to [0,1]."""
-    max_distance = 10  # Assumed max difference scale of scores
-    dist = abs(value1 - value2)
-    similarity = max(0, 1 - dist / max_distance)
-    return similarity
-
-def normalized_grid_distance(pos1, pos2, width, height):
-    """Calculate normalized distance between two grid positions in [0,1]. 
-    1 means adjacent, 0 means max distance."""
-    dx = abs(pos1[0] - pos2[0])
-    dy = abs(pos1[1] - pos2[1])
-    max_dist = np.sqrt(width ** 2 + height ** 2)
-    dist = np.sqrt(dx ** 2 + dy ** 2)
-    norm_dist = 1 - (dist / max_dist)  # Invert: closer = higher value
-    return norm_dist
-
-class CountryAgent(mesa.Agent):
-    def __init__(self, model, pos, culture_score=None, country_name=None):
+import math
+from mesa import Model, Agent
+from mesa.space import SingleGrid
+from mesa.datacollection import DataCollector
+import numpy as np
+class CountryAgent(Agent):
+    def __init__(self, model, pos, culture_vector):
         super().__init__(model)
         self.pos = pos
-        # Initialize culture score randomly if not provided
-        self.culture_score = culture_score if culture_score is not None else random.uniform(0, 10)
-        self.country_name = country_name
+        self.culture = culture_vector  # List of 6 Hofstede-style values ∈ [0,1]
 
     def step(self):
-        neighbor_agents = self.model.grid.get_neighbors(self.pos, moore=False, include_center=False)
-        if not neighbor_agents:
-            return
+        neighbors = self.model.grid.get_neighbors(self.pos, moore=True, include_center=False)
+        max_distance = math.sqrt((self.model.grid.width - 1) ** 2 + (self.model.grid.height - 1) ** 2)
 
-        neighbor_agent = self.random.choice(neighbor_agents)
+        for neighbor in neighbors:
+            # Compute normalized Euclidean distance
+            dx = self.pos[0] - neighbor.pos[0]
+            dy = self.pos[1] - neighbor.pos[1]
+            euclidean_distance = math.sqrt(dx**2 + dy**2)
+            distance_score = 1 - (euclidean_distance / max_distance)
 
-        sim = calculate_similarity(self.culture_score, neighbor_agent.culture_score)
-        dist_score = normalized_grid_distance(self.pos, neighbor_agent.pos, self.model.width, self.model.height)
+            # Skip if distance filtering is active and this neighbor is too far
+            if self.model.use_distance and distance_score < self.model.min_distance_threshold:
+                continue
 
-        if dist_score < self.model.min_distance_threshold:
-            # If distance is below threshold, no interaction
-            return
+            # Compute similarity (Axelrod-style): number of similar dimensions
+            similarities = [
+                abs(self.culture[i] - neighbor.culture[i]) < 0.1  # consider similar if difference < 0.1
+                for i in range(len(self.culture))
+            ]
+            similarity_score = sum(similarities) / len(self.culture)
 
-        if self.model.use_distance_in_similarity:
-            interaction_prob = sim * dist_score
-        else:
-            interaction_prob = sim
+            if similarity_score == 0:
+                continue  # No chance to interact
 
-        if self.random.random() < interaction_prob:
-            diff = neighbor_agent.culture_score - self.culture_score
-            step_size = 0.1
-            self.culture_score += step_size * diff
-            self.culture_score = np.clip(self.culture_score, 0, 10)
+            # Interaction chance proportional to similarity
+            if random.random() < similarity_score:
+                # Find differing features
+                differing_indices = [
+                    i for i in range(len(self.culture))
+                    if not similarities[i]
+                ]
+                if differing_indices:
+                    # Randomly pick one differing dimension to adopt from neighbor
+                    feature_to_copy = random.choice(differing_indices)
+                    self.culture[feature_to_copy] = neighbor.culture[feature_to_copy]
 
-class CulturalDiffusionModel(mesa.Model):
-    def __init__(self, width=10, height=10, seed=None, min_distance_threshold=0.0, use_distance_in_similarity=True):
+
+class CulturalModel(Model):
+    def __init__(self, width=10, height=10, min_distance_threshold=0.2, use_distance=True, seed=None):
         super().__init__(seed=seed)
 
-        self.width = width
-        self.height = height
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
+
+        self.grid = SingleGrid(width, height, torus=False)
         self.min_distance_threshold = min_distance_threshold
-        self.use_distance_in_similarity = use_distance_in_similarity
+        self.use_distance = use_distance
 
-        self.grid = mesa.space.SingleGrid(width, height, torus=False)
-        self.schedule = mesa.time.RandomActivation(self)
-
-        # Create agents and place on grid
         for x in range(width):
             for y in range(height):
-                agent = CountryAgent(self, pos=(x, y))
-                self.grid.place_agent(agent, (x, y))
-                self.schedule.add(agent)
+                # Remove any agent already at this position to avoid warnings (Mesa 3.0 safe)
+                for existing_agent in self.grid.get_cell_list_contents((x, y)):
+                    existing_agent.remove()
 
-        self.running = True
+                # Create a new agent with a random 6-dim cultural vector
+                culture_vector = [random.uniform(0, 1) for _ in range(6)]
+                agent = CountryAgent(self, pos=(x, y), culture_vector=culture_vector)
+                self.grid.place_agent(agent, (x, y))
+                
+        self.datacollector = DataCollector(
+            model_reporters={"AverageCultureSimilarity": self.compute_average_similarity,
+                            "UniqueProfiles": self.count_unique_profiles})
+
+    def count_unique_profiles(self):
+        profiles = set()
+        for agent in self.agents:
+            # Round each dimension to 1 decimal place to group similar cultures
+            rounded_profile = tuple(round(v, 1) for v in agent.culture)
+            profiles.add(rounded_profile)
+        return len(profiles)
+
+       
+        
+
+    def compute_average_similarity(self):
+        agents = list(self.agents)
+        if len(agents) < 2:
+            return 1.0
+
+        total_similarity = 0
+        comparisons = 0
+
+        for i in range(len(agents)):
+            for j in range(i + 1, len(agents)):
+                a = agents[i].culture
+                b = agents[j].culture
+                sim = sum(1 - abs(a[k] - b[k]) for k in range(6)) / 6
+                total_similarity += sim
+                comparisons += 1
+
+        return total_similarity / comparisons if comparisons else 1.0
 
     def step(self):
-        self.schedule.step()
-
-    def get_average_cultural_similarity(self):
-        total_sim = 0
-        count = 0
-        for agent in self.schedule.agents:
-            neighbor_agents = self.grid.get_neighbors(agent.pos, moore=False, include_center=False)
-            for neighbor in neighbor_agents:
-                sim = calculate_similarity(agent.culture_score, neighbor.culture_score)
-                total_sim += sim
-                count += 1
-        return total_sim / count if count > 0 else 0
-
-    def is_stable(self):
-        for agent in self.schedule.agents:
-            neighbor_agents = self.grid.get_neighbors(agent.pos, moore=False, include_center=False)
-            for neighbor in neighbor_agents:
-                sim = calculate_similarity(agent.culture_score, neighbor.culture_score)
-                dist_score = normalized_grid_distance(agent.pos, neighbor.pos, self.width, self.height)
-                if dist_score >= self.min_distance_threshold and sim < 1.0:
-                    return False
-        return True
+        self.datacollector.collect(self)
+        self.agents.shuffle_do("step")  # Mesa 3.0: activates all agents randomly each step
