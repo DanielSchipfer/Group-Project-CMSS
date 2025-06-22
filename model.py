@@ -42,7 +42,7 @@ class CountryAgent(Agent):
 
 
 class CulturalModel(Model):
-    def __init__(self, width=10, height=10, min_connectivity=0.2, use_distance=True, difference_threshhold=0.1, seed=None):
+    def __init__(self, width=10, height=10, min_connectivity=0.2, difference_threshhold=0.1, seed=None):
         super().__init__()
         
         if seed is not None:
@@ -53,18 +53,17 @@ class CulturalModel(Model):
             self.reset_randomizer(random.randrange(10**9))
             
         self.culture_dimension_stats = [
-                    {'name': 'PDI',  'mean': 59, 'std': 21.34, 'min': 11,  'max': 104},
-                    {'name': 'IND',  'mean': 46, 'std': 23.39, 'min': 12,  'max': 91},
-                    {'name': 'MAS',  'mean': 49, 'std': 19.96, 'min': 5,   'max': 110},
-                    {'name': 'UAI',  'mean': 67, 'std': 22.92, 'min': 8,   'max': 112},
-                    {'name': 'LTO',  'mean': 49, 'std': 22.57, 'min': 9,   'max': 100}
+                    {"name": "PDI",  "mean": 59, "std": 21.34, "min": 11,  "max": 104},
+                    {"name": "IND",  "mean": 46, "std": 23.39, "min": 12,  "max": 91},
+                    {"name": "MAS",  "mean": 49, "std": 19.96, "min": 5,   "max": 110},
+                    {"name": "UAI",  "mean": 67, "std": 22.92, "min": 8,   "max": 112},
+                    {"name": "LTO",  "mean": 49, "std": 22.57, "min": 9,   "max": 100}
                     ]
         
         self.num_culture_dimensions = len(self.culture_dimension_stats)
 
         self.grid = SingleGrid(width, height, torus=False)
         self.min_connectivity = min_connectivity
-        self.use_distance = use_distance
             
         if self.grid.width > 1 or self.grid.height > 1:
             self.max_grid_diagonal = math.sqrt((self.grid.width - 1)**2 + (self.grid.height - 1)**2)
@@ -81,10 +80,10 @@ class CulturalModel(Model):
                 culture_vector = []
                 for i in range(self.num_culture_dimensions):
                     stats = self.culture_dimension_stats[i]
-                    raw_value = self.random.normalvariate(mu=stats['mean'], sigma=stats['std'])
-                    denominator = stats['max'] - stats['min']
+                    raw_value = self.random.normalvariate(mu=stats["mean"], sigma=stats["std"])
+                    denominator = stats["max"] - stats["min"]
                     if denominator > 0:
-                        normalized_value = (raw_value - stats['min']) / denominator
+                        normalized_value = (raw_value - stats["min"]) / denominator
                     else:
                         normalized_value = 0.5 
                     clipped_value = np.clip(normalized_value, 0, 1)
